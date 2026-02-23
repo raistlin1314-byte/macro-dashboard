@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>美国经济宏观驾驶舱 - 科学优化版</title>
+    <title>美国经济宏观驾驶舱 - 国内优化版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -13,6 +13,7 @@
         .metric-card:hover { transform: translateY(-2px); }
         .demo-badge { font-size: 10px; background: rgba(234, 179, 8, 0.2); color: #eab308; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
         .live-badge { font-size: 10px; background: rgba(34, 197, 94, 0.2); color: #22c55e; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+        .static-badge { font-size: 10px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
         .warning-pulse { animation: pulse-red 2s infinite; }
         @keyframes pulse-red {
             0%, 100% { opacity: 1; }
@@ -22,6 +23,11 @@
 </head>
 <body class="p-4 max-w-7xl mx-auto">
     
+    <!-- 网络状态提示 -->
+    <div id="network-status" style="display:none; background: linear-gradient(90deg, #3b82f6, #2563eb); color: white; padding: 10px; border-radius: 8px; margin-bottom: 12px; text-align: center; font-size: 13px;">
+        <span id="status-text">正在加载数据...</span>
+    </div>
+
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-bold text-white">Macro Dashboard <span class="text-green-400 text-sm" id="connStatus">● 连接中...</span></h1>
         <div class="flex gap-2 text-xs text-slate-400">
@@ -40,11 +46,10 @@
             <div id="cycleStatus" class="px-4 py-2 rounded-lg text-sm font-bold bg-slate-700">等待数据...</div>
         </div>
         <div class="mt-4 text-sm text-slate-300" id="analysisText">正在获取数据...</div>
-        <!-- 详细评分展开 -->
         <div class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-500" id="scoreBreakdown"></div>
     </div>
 
-    <!-- Metrics Grid - 7个指标（新增CFNAI和信用利差） -->
+    <!-- Metrics Grid -->
     <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6" id="metricsGrid"></div>
 
     <!-- Charts Grid -->
@@ -76,10 +81,14 @@
     </div>
 
     <script>
+        // 配置：Worker 地址（备用）
         const WORKER_URL = 'https://fred-proxy.raistlin1314.workers.dev';
+        // 标记数据源模式
+        let dataSourceMode = 'unknown'; // 'static', 'worker', 'demo'
         let charts = {};
         let errorMessages = [];
         
+        // 生成模拟数据
         function generateDemoData(baseValue, variance, count = 36) {
             const dates = Array.from({length: count}, (_, i) => {
                 const d = new Date();
@@ -93,25 +102,62 @@
             });
         }
 
+        // 优先读取本地静态数据（国内可访问），失败时回退到 Worker
         async function fetchWithFallback(series, baseValue, variance, chartNum, months = 36) {
+            // 方案1：尝试读取同域名的静态 JSON（GitHub Actions 生成，国内畅通）
+            try {
+                const staticUrl = `./data/${series}.json?t=${Date.now()}`; // 加时间戳防缓存
+                const response = await fetch(staticUrl, { 
+                    method: 'GET',
+                    cache: 'no-cache' // 确保获取最新
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.observations && data.observations.length > 0) {
+                        const processed = data.observations
+                            .filter(d => d.value !== '.' && d.value !== '' && d.value !== null)
+                            .map(d => ({ date: d.date, value: parseFloat(d.value) }))
+                            .reverse();
+                        
+                        document.getElementById(`status${chartNum}`).innerHTML = '<span class="static-badge">● 已同步</span>';
+                        if (dataSourceMode === 'unknown') dataSourceMode = 'static';
+                        return processed;
+                    }
+                }
+            } catch (e) {
+                console.log(`Static data not found for ${series}, trying Worker...`);
+            }
+            
+            // 方案2：回退到 Cloudflare Worker（需要代理）
             try {
                 const url = `${WORKER_URL}?series=${series}&limit=${months}`;
                 const response = await fetch(url);
+                
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
                 const data = await response.json();
+                
                 if (data.error) {
-                    document.getElementById(`status${chartNum}`).innerHTML = '<span class="demo-badge">Worker备用</span>';
-                    return data.observations.map(d => ({...d, value: parseFloat(d.value)}));
+                    throw new Error(data.message || 'Worker error');
                 }
+                
                 const processed = data.observations
-                    .filter(d => d.value !== '.' && d.value !== '')
+                    .filter(d => d.value !== '.' && d.value !== '' && d.value !== null)
                     .map(d => ({ date: d.date, value: parseFloat(d.value) }))
                     .reverse();
-                document.getElementById(`status${chartNum}`).innerHTML = '<span class="live-badge">● FRED实时</span>';
+                
+                document.getElementById(`status${chartNum}`).innerHTML = '<span class="live-badge">● 实时</span>';
+                if (dataSourceMode === 'unknown') dataSourceMode = 'worker';
                 return processed;
+                
             } catch (error) {
+                console.error(`${series} failed:`, error);
                 errorMessages.push(series);
+                
+                // 方案3：本地生成演示数据
                 document.getElementById(`status${chartNum}`).innerHTML = '<span class="demo-badge">演示数据</span>';
+                if (dataSourceMode === 'unknown') dataSourceMode = 'demo';
                 return generateDemoData(baseValue, variance, months);
             }
         }
@@ -137,31 +183,57 @@
         }
 
         async function loadAllData() {
+            // 显示加载状态
+            document.getElementById('network-status').style.display = 'block';
             document.getElementById('connStatus').textContent = '● 获取数据中...';
             errorMessages = [];
             
-            // 获取所有指标（CFNAIMA3替代费城联储，新增BAML信用利差）
-            const [yieldSpread, unemployment, cfnai, fedFunds, pceIndex, creditSpread] = await Promise.all([
-                fetchWithFallback('T10Y2Y', -0.2, 0.4, 1, 36),
-                fetchWithFallback('UNRATE', 3.8, 0.4, 2, 36),
-                fetchWithFallback('CFNAIMA3', 0, 0.5, 3, 36),  // 替代GACDFSA066MSFRBPHI
-                fetchWithFallback('FEDFUNDS', 5.0, 0.2, 4, 36),
-                fetchWithFallback('PCEPILFE', 127, 2, 4, 48),
-                fetchWithFallback('BAMLH0A0HYM2', 4, 1.5, 5, 36)  // 高收益债利差，新增
-            ]);
-            
-            const coreInflationYoY = calculateYoY(pceIndex);
-            const sahm = calculateSahm(unemployment);
-            
-            updateDashboard(yieldSpread, unemployment, cfnai, fedFunds, pceIndex, coreInflationYoY, sahm, creditSpread);
-            
-            const statusEl = document.getElementById('connStatus');
-            if (errorMessages.length > 0) {
-                statusEl.textContent = `● 部分演示 (${errorMessages.length}个)`;
-                statusEl.className = 'text-yellow-400 text-sm';
-            } else {
-                statusEl.textContent = '● Worker已连接';
-                statusEl.className = 'text-green-400 text-sm';
+            try {
+                // 并行获取所有数据
+                const [yieldSpread, unemployment, cfnai, fedFunds, pceIndex, creditSpread] = await Promise.all([
+                    fetchWithFallback('T10Y2Y', -0.2, 0.4, 1, 36),
+                    fetchWithFallback('UNRATE', 3.8, 0.4, 2, 36),
+                    fetchWithFallback('CFNAIMA3', -0.2, 0.5, 3, 36),
+                    fetchWithFallback('FEDFUNDS', 5.0, 0.2, 4, 36),
+                    fetchWithFallback('PCEPILFE', 127, 2, 4, 48),
+                    fetchWithFallback('BAMLH0A0HYM2', 400, 50, 5, 36)
+                ]);
+                
+                // 计算衍生指标
+                const coreInflationYoY = calculateYoY(pceIndex);
+                const sahm = calculateSahm(unemployment);
+                
+                updateDashboard(yieldSpread, unemployment, cfnai, fedFunds, pceIndex, coreInflationYoY, sahm, creditSpread);
+                
+                // 更新状态栏
+                const statusEl = document.getElementById('connStatus');
+                const statusDiv = document.getElementById('network-status');
+                
+                if (dataSourceMode === 'static') {
+                    statusEl.textContent = '● 数据已同步';
+                    statusEl.className = 'text-blue-400 text-sm';
+                    document.getElementById('status-text').textContent = '✓ 已加载同步数据（每6小时自动更新）';
+                    statusDiv.style.background = 'linear-gradient(90deg, #3b82f6, #2563eb)';
+                } else if (dataSourceMode === 'worker') {
+                    statusEl.textContent = '● 实时连接';
+                    statusEl.className = 'text-green-400 text-sm';
+                    document.getElementById('status-text').textContent = '✓ 已连接实时数据源';
+                    statusDiv.style.background = 'linear-gradient(90deg, #22c55e, #16a34a)';
+                } else {
+                    statusEl.textContent = '● 演示模式';
+                    statusEl.className = 'text-yellow-400 text-sm';
+                    document.getElementById('status-text').textContent = '⚠️ 当前显示演示数据，请检查网络';
+                    statusDiv.style.background = 'linear-gradient(90deg, #eab308, #ca8a04)';
+                }
+                
+                // 3秒后隐藏状态栏
+                setTimeout(() => {
+                    document.getElementById('network-status').style.display = 'none';
+                }, 3000);
+                
+            } catch (e) {
+                console.error('Load error:', e);
+                document.getElementById('status-text').textContent = '加载失败，请刷新重试';
             }
         }
 
@@ -171,81 +243,57 @@
             const current = {
                 yield: getLatest(yieldSpread),
                 unemp: getLatest(unemployment),
-                cfnai: getLatest(cfnai),  // 芝加哥联储指数
+                cfnai: getLatest(cfnai),
                 sahm: getLatest(sahm),
                 nominalRate: getLatest(fedFunds),
                 inflation: getLatest(coreInflationYoY),
                 realRate: getLatest(fedFunds) - getLatest(coreInflationYoY),
-                creditSpread: getLatest(creditSpread)  // 信用利差
+                creditSpread: getLatest(creditSpread)
             };
 
-            // ============================
-            // 优化后的评分算法（新权重）
-            // ============================
+            // 评分算法
             let score = 0;
             let breakdown = [];
             
-            // 1. 收益率曲线 (35%) - 最强领先指标
             let yieldScore = 0;
             if (current.yield < 0) {
                 yieldScore = 35;
-                if (current.yield < -0.5) yieldScore += 5; // 深度倒挂额外加分
+                if (current.yield < -0.5) yieldScore += 5;
             } else if (current.yield < 0.25) {
-                yieldScore = 15; // 接近倒挂
+                yieldScore = 15;
             }
             score += yieldScore;
             breakdown.push(`曲线${yieldScore}分`);
 
-            // 2. 实际政策利率 (25%) - 因果性最强
             let realRateScore = 0;
-            if (current.realRate > 3.5) {
-                realRateScore = 25;
-            } else if (current.realRate > 2.5) {
-                realRateScore = 15;
-            } else if (current.realRate > 1.5) {
-                realRateScore = 8;
-            }
+            if (current.realRate > 3.5) realRateScore = 25;
+            else if (current.realRate > 2.5) realRateScore = 15;
+            else if (current.realRate > 1.5) realRateScore = 8;
             score += realRateScore;
             breakdown.push(`实际利率${realRateScore}分`);
 
-            // 3. 萨姆规则 (20%) - 高准确率确认器
             let sahmScore = 0;
-            if (current.sahm > 0.5) {
-                sahmScore = 20;
-            } else if (current.sahm > 0.3) {
-                sahmScore = 10;
-            }
+            if (current.sahm > 0.5) sahmScore = 20;
+            else if (current.sahm > 0.3) sahmScore = 10;
             score += sahmScore;
             breakdown.push(`萨姆${sahmScore}分`);
 
-            // 4. 芝加哥联储CFNAI-MA3 (15%) - 替代费城联储
-            // 阈值: <-0.7为衰退, <-0.2为低于趋势增长
             let cfnaiScore = 0;
-            if (current.cfnai < -0.7) {
-                cfnaiScore = 15;
-            } else if (current.cfnai < -0.2) {
-                cfnaiScore = 8;
-            } else if (current.cfnai < 0) {
-                cfnaiScore = 3;
-            }
+            if (current.cfnai < -0.7) cfnaiScore = 15;
+            else if (current.cfnai < -0.2) cfnaiScore = 8;
+            else if (current.cfnai < 0) cfnaiScore = 3;
             score += cfnaiScore;
             breakdown.push(`CFNAI${cfnaiScore}分`);
 
-            // 5. 高收益债信用利差 (5%) - 金融压力
             let creditScore = 0;
-            if (current.creditSpread > 6) {  // 600bps
-                creditScore = 5;
-            } else if (current.creditSpread > 4) {  // 400bps
-                creditScore = 3;
-            }
+            if (current.creditSpread > 600) creditScore = 5;
+            else if (current.creditSpread > 500) creditScore = 3;
             score += creditScore;
             breakdown.push(`信用利差${creditScore}分`);
 
             score = Math.min(100, Math.max(0, score));
 
-            // ============================
             // UI更新
-            // ============================
             document.getElementById('recessionScore').textContent = score + '%';
             document.getElementById('recessionScore').className = 'text-4xl font-bold ' + 
                 (score > 70 ? 'text-red-400 warning-pulse' : score > 40 ? 'text-yellow-400' : 'text-green-400');
@@ -269,10 +317,9 @@
                 `萨姆${current.sahm.toFixed(2)}, ` +
                 `利差${current.creditSpread.toFixed(0)}bps`;
 
-            // 显示评分明细
             document.getElementById('scoreBreakdown').textContent = '评分构成: ' + breakdown.join(' | ');
 
-            // Metrics Grid - 7个指标
+            // Metrics
             const metrics = [
                 { label: '10Y-2Y利差', value: current.yield.toFixed(2) + '%', color: current.yield < 0 ? 'text-red-400' : 'text-green-400' },
                 { label: '失业率', value: current.unemp.toFixed(1) + '%', color: current.unemp > 4 ? 'text-yellow-400' : 'text-green-400' },
@@ -280,7 +327,7 @@
                 { label: '萨姆规则', value: current.sahm.toFixed(2), color: current.sahm > 0.5 ? 'text-red-400' : 'text-slate-300', subtext: current.sahm > 0.5 ? '信号' : '正常' },
                 { label: '核心PCE同比', value: current.inflation.toFixed(1) + '%', color: current.inflation > 3 ? 'text-red-400' : 'text-green-400' },
                 { label: '实际利率', value: current.realRate.toFixed(1) + '%', color: current.realRate > 2.5 ? 'text-red-400' : 'text-green-400' },
-                { label: '高收益利差', value: current.creditSpread.toFixed(0) + 'bps', color: current.creditSpread > 5 ? 'text-red-400' : 'text-green-400', subtext: current.creditSpread > 5 ? '压力' : '正常' }
+                { label: '高收益利差', value: current.creditSpread.toFixed(0) + 'bps', color: current.creditSpread > 500 ? 'text-red-400' : 'text-green-400', subtext: current.creditSpread > 500 ? '压力' : '正常' }
             ];
 
             document.getElementById('metricsGrid').innerHTML = metrics.map(m => `
@@ -294,9 +341,9 @@
             // Charts
             createChart('chart1', yieldSpread, '利差(%)', '#60a5fa', 0, true);
             createChart('chart2', unemployment, '失业率(%)', '#a78bfa', null, false);
-            createChart('chart3', cfnai, 'CFNAI-MA3', '#34d399', -0.7, true);  // 阈值-0.7
+            createChart('chart3', cfnai, 'CFNAI-MA3', '#34d399', -0.7, true);
             createRealRateChart(fedFunds, coreInflationYoY);
-            createChart('chart5', creditSpread, '利差(bps)', '#f472b6', 500, true);  // 阈值500bps
+            createChart('chart5', creditSpread, '利差(bps)', '#f472b6', 500, true);
             createScoreChart(score);
         }
 
@@ -375,12 +422,10 @@
             });
         }
 
-        // 新增：评分历史趋势图（简化版）
         function createScoreChart(currentScore) {
             const ctx = document.getElementById('chart6').getContext('2d');
             if (charts.chart6) charts.chart6.destroy();
             
-            // 模拟历史评分（实际应从历史数据重新计算）
             const history = Array.from({length: 12}, (_, i) => {
                 const d = new Date();
                 d.setMonth(d.getMonth() - (11 - i));
@@ -419,8 +464,8 @@
             });
         }
 
+        // 启动加载
         loadAllData();
-        setInterval(() => { if (errorMessages.length > 0) loadAllData(); }, 60000);
     </script>
 </body>
 </html>
