@@ -1,0 +1,58 @@
+name: Update FRED Data
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时运行一次（UTC时间）
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: pip install requests
+    
+    - name: Fetch FRED Data
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      run: |
+        python << 'EOF'
+        import requests
+        import json
+        import os
+        
+        FRED_KEY = os.environ['FRED_API_KEY']
+        series_list = {
+            'T10Y2Y': 36,
+            'UNRATE': 36,
+            'CFNAIMA3': 36,
+            'FEDFUNDS': 36,
+            'PCEPILFE': 48,
+            'BAMLH0A0HYM2': 36
+        }
+        
+        for series, limit in series_list.items():
+            url = f'https://api.stlouisfed.org/fred/series/observations?series_id={series}&api_key={FRED_KEY}&file_type=json&limit={limit}&sort_order=desc'
+            response = requests.get(url)
+            if response.status_code == 200:
+                with open(f'data/{series}.json', 'w') as f:
+                    json.dump(response.json(), f)
+                print(f'✓ Saved {series}')
+            else:
+                print(f'✗ Failed {series}: {response.status_code}')
+        EOF
+    
+    - name: Commit and Push
+      run: |
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'actions@github.com'
+        git add data/
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Update FRED data $(date +'%Y-%m-%d %H:%M')" && git push)
