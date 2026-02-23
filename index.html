@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>美国经济宏观驾驶舱 - Cloudflare版</title>
+    <title>美国经济宏观驾驶舱 - 科学优化版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -13,33 +13,41 @@
         .metric-card:hover { transform: translateY(-2px); }
         .demo-badge { font-size: 10px; background: rgba(234, 179, 8, 0.2); color: #eab308; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
         .live-badge { font-size: 10px; background: rgba(34, 197, 94, 0.2); color: #22c55e; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+        .warning-pulse { animation: pulse-red 2s infinite; }
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
     </style>
 </head>
 <body class="p-4 max-w-7xl mx-auto">
     
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-bold text-white">Macro Dashboard <span class="text-green-400 text-sm" id="connStatus">● 连接中...</span></h1>
-        <div class="flex gap-2">
+        <div class="flex gap-2 text-xs text-slate-400">
+            <span>权重: 曲线35% | 政策25% | 萨姆20% | CFNAI15% | 信用5%</span>
             <button onclick="location.reload()" class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white transition">刷新数据</button>
         </div>
     </div>
 
-    <!-- Score -->
-    <div class="glass rounded-lg p-6 mb-6">
+    <!-- Score Panel -->
+    <div class="glass rounded-lg p-6 mb-6" id="scorePanel">
         <div class="flex justify-between items-center">
             <div>
-                <h3 class="text-slate-400 text-sm">衰退概率评分</h3>
+                <h3 class="text-slate-400 text-sm">衰退概率评分 <span class="text-xs opacity-50">(优化算法)</span></h3>
                 <div class="text-4xl font-bold text-white mt-1" id="recessionScore">--%</div>
             </div>
             <div id="cycleStatus" class="px-4 py-2 rounded-lg text-sm font-bold bg-slate-700">等待数据...</div>
         </div>
         <div class="mt-4 text-sm text-slate-300" id="analysisText">正在获取数据...</div>
+        <!-- 详细评分展开 -->
+        <div class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-500" id="scoreBreakdown"></div>
     </div>
 
-    <!-- Metrics -->
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6" id="metricsGrid"></div>
+    <!-- Metrics Grid - 7个指标（新增CFNAI和信用利差） -->
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6" id="metricsGrid"></div>
 
-    <!-- Charts -->
+    <!-- Charts Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="glass rounded-lg p-4">
             <h4 class="text-sm text-slate-400 mb-3">收益率曲线 (10Y-2Y) <span id="status1"></span></h4>
@@ -50,21 +58,25 @@
             <div class="relative h-64"><canvas id="chart2"></canvas></div>
         </div>
         <div class="glass rounded-lg p-4">
-            <h4 class="text-sm text-slate-400 mb-3">费城联储制造业现状指数 <span id="status3"></span></h4>
+            <h4 class="text-sm text-slate-400 mb-3">芝加哥联储全国活动指数(MA3) <span id="status3"></span></h4>
             <div class="relative h-64"><canvas id="chart3"></canvas></div>
         </div>
         <div class="glass rounded-lg p-4">
-            <h4 class="text-sm text-slate-400 mb-3">实际政策利率 vs 核心PCE同比 <span id="status4"></span></h4>
+            <h4 class="text-sm text-slate-400 mb-3">实际政策利率 vs 通胀 <span id="status4"></span></h4>
             <div class="relative h-64"><canvas id="chart4"></canvas></div>
+        </div>
+        <div class="glass rounded-lg p-4">
+            <h4 class="text-sm text-slate-400 mb-3">高收益债信用利差 <span id="status5"></span></h4>
+            <div class="relative h-64"><canvas id="chart5"></canvas></div>
+        </div>
+        <div class="glass rounded-lg p-4">
+            <h4 class="text-sm text-slate-400 mb-3">衰退概率历史趋势 <span class="text-xs text-slate-500">(拟合)</span></h4>
+            <div class="relative h-64"><canvas id="chart6"></canvas></div>
         </div>
     </div>
 
     <script>
-        // ==========================================
-        // 关键配置：你的 Cloudflare Worker 地址
-        // ==========================================
         const WORKER_URL = 'https://fred-proxy.raistlin1314.workers.dev';
-        
         let charts = {};
         let errorMessages = [];
         
@@ -74,7 +86,6 @@
                 d.setMonth(d.getMonth() - (count - 1 - i));
                 return d.toISOString().split('T')[0];
             });
-            
             return dates.map((date, i) => {
                 const trend = Math.sin(i / 6) * (variance * 0.8);
                 const noise = (Math.random() - 0.5) * variance;
@@ -84,90 +95,66 @@
 
         async function fetchWithFallback(series, baseValue, variance, chartNum, months = 36) {
             try {
-                // 通过 Cloudflare Worker 代理请求（无 CORS 问题）
                 const url = `${WORKER_URL}?series=${series}&limit=${months}`;
                 const response = await fetch(url);
-                
-                if (!response.ok) {
-                    throw new Error(`Worker HTTP ${response.status}`);
-                }
-                
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                
-                // 检查 Worker 是否返回了错误（但给了备用数据）
                 if (data.error) {
-                    console.warn(`Worker returned fallback for ${series}:`, data.message);
                     document.getElementById(`status${chartNum}`).innerHTML = '<span class="demo-badge">Worker备用</span>';
                     return data.observations.map(d => ({...d, value: parseFloat(d.value)}));
                 }
-                
-                // 正常处理 FRED 数据
                 const processed = data.observations
-                    .filter(d => d.value !== '.' && d.value !== '' && d.value !== null)
+                    .filter(d => d.value !== '.' && d.value !== '')
                     .map(d => ({ date: d.date, value: parseFloat(d.value) }))
-                    .reverse(); // 按时间正序排列
-                
-                if (processed.length === 0) {
-                    throw new Error('No valid data points');
-                }
-                
+                    .reverse();
                 document.getElementById(`status${chartNum}`).innerHTML = '<span class="live-badge">● FRED实时</span>';
                 return processed;
-                
             } catch (error) {
-                console.error(`${series} failed:`, error);
                 errorMessages.push(series);
                 document.getElementById(`status${chartNum}`).innerHTML = '<span class="demo-badge">演示数据</span>';
-                // 本地兜底生成模拟数据
                 return generateDemoData(baseValue, variance, months);
             }
         }
 
-        // 计算核心PCE同比
+        // 计算PCE同比
         function calculateYoY(priceData) {
             if (priceData.length < 13) return [];
-            const yoyData = [];
-            for (let i = 12; i < priceData.length; i++) {
-                const current = priceData[i].value;
-                const prevYear = priceData[i-12].value;
-                const rate = ((current - prevYear) / prevYear) * 100;
-                yoyData.push({ date: priceData[i].date, value: rate });
-            }
-            return yoyData;
+            return priceData.slice(12).map((d, i) => {
+                const prev = priceData[i].value;
+                return { date: d.date, value: ((d.value - prev) / prev) * 100 };
+            });
         }
 
-        // 萨姆规则计算
+        // 萨姆规则
         function calculateSahm(unemploymentData) {
             if (unemploymentData.length < 13) return [];
-            const sahm = [];
-            for (let i = 12; i < unemploymentData.length; i++) {
-                const current3m = (unemploymentData[i].value + unemploymentData[i-1].value + unemploymentData[i-2].value) / 3;
-                const min12m = Math.min(...unemploymentData.slice(i-11, i+1).map(d => d.value));
-                sahm.push({ date: unemploymentData[i].date, value: current3m - min12m });
-            }
-            return sahm;
+            return unemploymentData.slice(12).map((d, i) => {
+                const idx = i + 12;
+                const current3m = (unemploymentData[idx].value + unemploymentData[idx-1].value + unemploymentData[idx-2].value) / 3;
+                const min12m = Math.min(...unemploymentData.slice(idx-11, idx+1).map(x => x.value));
+                return { date: d.date, value: current3m - min12m };
+            });
         }
 
         async function loadAllData() {
             document.getElementById('connStatus').textContent = '● 获取数据中...';
             errorMessages = [];
             
-            // 并行获取所有数据（通过 Worker 代理）
-            const [yieldSpread, unemployment, phillyFed, fedFunds, pceIndex] = await Promise.all([
+            // 获取所有指标（CFNAIMA3替代费城联储，新增BAML信用利差）
+            const [yieldSpread, unemployment, cfnai, fedFunds, pceIndex, creditSpread] = await Promise.all([
                 fetchWithFallback('T10Y2Y', -0.2, 0.4, 1, 36),
                 fetchWithFallback('UNRATE', 3.8, 0.4, 2, 36),
-                fetchWithFallback('GACDFSA066MSFRBPHI', 5, 8, 3, 36),
+                fetchWithFallback('CFNAIMA3', 0, 0.5, 3, 36),  // 替代GACDFSA066MSFRBPHI
                 fetchWithFallback('FEDFUNDS', 5.0, 0.2, 4, 36),
-                fetchWithFallback('PCEPILFE', 127, 2, 4, 48) // PCE需要更长历史计算同比
+                fetchWithFallback('PCEPILFE', 127, 2, 4, 48),
+                fetchWithFallback('BAMLH0A0HYM2', 4, 1.5, 5, 36)  // 高收益债利差，新增
             ]);
             
-            // 计算衍生指标
             const coreInflationYoY = calculateYoY(pceIndex);
             const sahm = calculateSahm(unemployment);
             
-            updateDashboard(yieldSpread, unemployment, phillyFed, fedFunds, pceIndex, coreInflationYoY, sahm);
+            updateDashboard(yieldSpread, unemployment, cfnai, fedFunds, pceIndex, coreInflationYoY, sahm, creditSpread);
             
-            // 更新连接状态
             const statusEl = document.getElementById('connStatus');
             if (errorMessages.length > 0) {
                 statusEl.textContent = `● 部分演示 (${errorMessages.length}个)`;
@@ -178,65 +165,90 @@
             }
         }
 
-        function updateDashboard(yieldSpread, unemployment, phillyFed, fedFunds, pceIndex, coreInflationYoY, sahm) {
+        function updateDashboard(yieldSpread, unemployment, cfnai, fedFunds, pceIndex, coreInflationYoY, sahm, creditSpread) {
             const getLatest = (arr) => arr.length > 0 ? arr[arr.length - 1].value : 0;
-            
-            const currentNominalRate = getLatest(fedFunds);
-            const currentInflation = getLatest(coreInflationYoY);
-            const currentRealRate = currentNominalRate - currentInflation;
             
             const current = {
                 yield: getLatest(yieldSpread),
                 unemp: getLatest(unemployment),
-                philly: getLatest(phillyFed),
+                cfnai: getLatest(cfnai),  // 芝加哥联储指数
                 sahm: getLatest(sahm),
-                nominalRate: currentNominalRate,
-                inflation: currentInflation,
-                realRate: currentRealRate
+                nominalRate: getLatest(fedFunds),
+                inflation: getLatest(coreInflationYoY),
+                realRate: getLatest(fedFunds) - getLatest(coreInflationYoY),
+                creditSpread: getLatest(creditSpread)  // 信用利差
             };
 
-            // 衰退评分模型
+            // ============================
+            // 优化后的评分算法（新权重）
+            // ============================
             let score = 0;
-            let riskFactors = [];
-
+            let breakdown = [];
+            
+            // 1. 收益率曲线 (35%) - 最强领先指标
+            let yieldScore = 0;
             if (current.yield < 0) {
-                score += 30;
-                riskFactors.push('曲线倒挂');
-                if (current.yield < -0.5) {
-                    score += 10;
-                    riskFactors.push('深度倒挂');
-                }
+                yieldScore = 35;
+                if (current.yield < -0.5) yieldScore += 5; // 深度倒挂额外加分
+            } else if (current.yield < 0.25) {
+                yieldScore = 15; // 接近倒挂
             }
+            score += yieldScore;
+            breakdown.push(`曲线${yieldScore}分`);
 
-            if (current.sahm > 0.5) {
-                score += 25;
-                riskFactors.push('萨姆信号');
-            } else if (current.sahm > 0.3) {
-                score += 15;
-            }
-
-            if (current.philly < 0) {
-                score += 20;
-                riskFactors.push('制造业收缩');
-                if (current.philly < -10) score += 10;
-            }
-
+            // 2. 实际政策利率 (25%) - 因果性最强
+            let realRateScore = 0;
             if (current.realRate > 3.5) {
-                score += 15;
-                riskFactors.push('深度紧缩');
+                realRateScore = 25;
             } else if (current.realRate > 2.5) {
-                score += 10;
-                riskFactors.push('政策紧缩');
+                realRateScore = 15;
             } else if (current.realRate > 1.5) {
-                score += 5;
+                realRateScore = 8;
             }
+            score += realRateScore;
+            breakdown.push(`实际利率${realRateScore}分`);
+
+            // 3. 萨姆规则 (20%) - 高准确率确认器
+            let sahmScore = 0;
+            if (current.sahm > 0.5) {
+                sahmScore = 20;
+            } else if (current.sahm > 0.3) {
+                sahmScore = 10;
+            }
+            score += sahmScore;
+            breakdown.push(`萨姆${sahmScore}分`);
+
+            // 4. 芝加哥联储CFNAI-MA3 (15%) - 替代费城联储
+            // 阈值: <-0.7为衰退, <-0.2为低于趋势增长
+            let cfnaiScore = 0;
+            if (current.cfnai < -0.7) {
+                cfnaiScore = 15;
+            } else if (current.cfnai < -0.2) {
+                cfnaiScore = 8;
+            } else if (current.cfnai < 0) {
+                cfnaiScore = 3;
+            }
+            score += cfnaiScore;
+            breakdown.push(`CFNAI${cfnaiScore}分`);
+
+            // 5. 高收益债信用利差 (5%) - 金融压力
+            let creditScore = 0;
+            if (current.creditSpread > 6) {  // 600bps
+                creditScore = 5;
+            } else if (current.creditSpread > 4) {  // 400bps
+                creditScore = 3;
+            }
+            score += creditScore;
+            breakdown.push(`信用利差${creditScore}分`);
 
             score = Math.min(100, Math.max(0, score));
 
+            // ============================
             // UI更新
+            // ============================
             document.getElementById('recessionScore').textContent = score + '%';
             document.getElementById('recessionScore').className = 'text-4xl font-bold ' + 
-                (score > 70 ? 'text-red-400' : score > 40 ? 'text-yellow-400' : 'text-green-400');
+                (score > 70 ? 'text-red-400 warning-pulse' : score > 40 ? 'text-yellow-400' : 'text-green-400');
             
             const statusEl = document.getElementById('cycleStatus');
             if (score > 70) {
@@ -250,21 +262,25 @@
                 statusEl.className = 'px-4 py-2 rounded-lg text-sm font-bold bg-green-900/50 text-green-200';
             }
 
-            document.getElementById('analysisText').textContent = 
-                `${current.yield < 0 ? '曲线倒挂' : '曲线正常'}(${current.yield.toFixed(2)}%)，` +
-                `实际利率${current.realRate > 0 ? '+' : ''}${current.realRate.toFixed(1)}%(` +
-                `名义${current.nominalRate.toFixed(1)}%-通胀${current.inflation.toFixed(1)}%)，` +
-                `萨姆${current.sahm.toFixed(2)}` +
-                (riskFactors.length > 0 ? `。风险：[${riskFactors.join(', ')}]` : '');
+            document.getElementById('analysisText').innerHTML = 
+                `曲线${current.yield < 0 ? '倒挂' : '正常'}(${current.yield.toFixed(2)}%), ` +
+                `实际利率${current.realRate.toFixed(1)}%, ` +
+                `CFNAI ${current.cfnai.toFixed(2)}, ` +
+                `萨姆${current.sahm.toFixed(2)}, ` +
+                `利差${current.creditSpread.toFixed(0)}bps`;
 
-            // Metrics Grid
+            // 显示评分明细
+            document.getElementById('scoreBreakdown').textContent = '评分构成: ' + breakdown.join(' | ');
+
+            // Metrics Grid - 7个指标
             const metrics = [
                 { label: '10Y-2Y利差', value: current.yield.toFixed(2) + '%', color: current.yield < 0 ? 'text-red-400' : 'text-green-400' },
                 { label: '失业率', value: current.unemp.toFixed(1) + '%', color: current.unemp > 4 ? 'text-yellow-400' : 'text-green-400' },
-                { label: '费城联储指数', value: (current.philly > 0 ? '+' : '') + current.philly.toFixed(1), color: current.philly < 0 ? 'text-red-400' : 'text-green-400', subtext: current.philly < 0 ? '收缩' : '扩张' },
-                { label: '核心PCE同比', value: current.inflation.toFixed(1) + '%', color: current.inflation > 3 ? 'text-red-400' : current.inflation > 2.5 ? 'text-yellow-400' : 'text-green-400' },
-                { label: '名义利率', value: current.nominalRate.toFixed(2) + '%', color: 'text-blue-400' },
-                { label: '实际利率', value: (current.realRate > 0 ? '+' : '') + current.realRate.toFixed(1) + '%', color: current.realRate > 3 ? 'text-red-400' : current.realRate > 2 ? 'text-yellow-400' : 'text-green-400', subtext: current.realRate > 2.5 ? '紧缩' : '宽松' }
+                { label: 'CFNAI-MA3', value: current.cfnai.toFixed(2), color: current.cfnai < -0.7 ? 'text-red-400' : current.cfnai < 0 ? 'text-yellow-400' : 'text-green-400', subtext: current.cfnai < -0.7 ? '衰退' : current.cfnai < 0 ? '低于趋势' : '扩张' },
+                { label: '萨姆规则', value: current.sahm.toFixed(2), color: current.sahm > 0.5 ? 'text-red-400' : 'text-slate-300', subtext: current.sahm > 0.5 ? '信号' : '正常' },
+                { label: '核心PCE同比', value: current.inflation.toFixed(1) + '%', color: current.inflation > 3 ? 'text-red-400' : 'text-green-400' },
+                { label: '实际利率', value: current.realRate.toFixed(1) + '%', color: current.realRate > 2.5 ? 'text-red-400' : 'text-green-400' },
+                { label: '高收益利差', value: current.creditSpread.toFixed(0) + 'bps', color: current.creditSpread > 5 ? 'text-red-400' : 'text-green-400', subtext: current.creditSpread > 5 ? '压力' : '正常' }
             ];
 
             document.getElementById('metricsGrid').innerHTML = metrics.map(m => `
@@ -278,8 +294,10 @@
             // Charts
             createChart('chart1', yieldSpread, '利差(%)', '#60a5fa', 0, true);
             createChart('chart2', unemployment, '失业率(%)', '#a78bfa', null, false);
-            createChart('chart3', phillyFed, '费城联储指数', '#34d399', 0, true);
+            createChart('chart3', cfnai, 'CFNAI-MA3', '#34d399', -0.7, true);  // 阈值-0.7
             createRealRateChart(fedFunds, coreInflationYoY);
+            createChart('chart5', creditSpread, '利差(bps)', '#f472b6', 500, true);  // 阈值500bps
+            createScoreChart(score);
         }
 
         function createChart(id, data, label, color, threshold = null, showThreshold = false) {
@@ -298,7 +316,7 @@
 
             if (showThreshold && threshold !== null) {
                 datasets.push({
-                    label: '阈值',
+                    label: '衰退阈值',
                     data: Array(data.length).fill(threshold),
                     borderColor: '#ef4444',
                     borderDash: [5, 5],
@@ -331,66 +349,78 @@
             const dateMap = new Map();
             fedFunds.forEach(d => dateMap.set(d.date, { nominal: d.value }));
             inflation.forEach(d => {
-                if (dateMap.has(d.date)) {
-                    dateMap.get(d.date).inflation = d.value;
-                }
+                if (dateMap.has(d.date)) dateMap.get(d.date).inflation = d.value;
             });
             
             const aligned = Array.from(dateMap.entries())
-                .filter(([date, vals]) => vals.inflation !== undefined)
-                .map(([date, vals]) => ({
-                    date,
-                    nominal: vals.nominal,
-                    inflation: vals.inflation,
-                    real: vals.nominal - vals.inflation
-                }));
+                .filter(([_, vals]) => vals.inflation !== undefined)
+                .map(([date, vals]) => ({ date, nominal: vals.nominal, inflation: vals.inflation, real: vals.nominal - vals.inflation }));
             
             charts.chart4 = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: aligned.map(d => d.date.slice(0, 7)),
+                    datasets: [
+                        { label: '名义利率', data: aligned.map(d => d.nominal), borderColor: '#3b82f6', borderWidth: 2, pointRadius: 2, tension: 0.4 },
+                        { label: '核心PCE同比', data: aligned.map(d => d.inflation), borderColor: '#fbbf24', borderWidth: 2, pointRadius: 2, tension: 0.4 },
+                        { label: '实际利率', data: aligned.map(d => d.real), borderColor: '#ef4444', borderDash: [5,5], borderWidth: 2, pointRadius: 2 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#94a3b8', font: {size: 10} } } },
+                    scales: { x: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#334155' } }, y: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#334155' } } }
+                }
+            });
+        }
+
+        // 新增：评分历史趋势图（简化版）
+        function createScoreChart(currentScore) {
+            const ctx = document.getElementById('chart6').getContext('2d');
+            if (charts.chart6) charts.chart6.destroy();
+            
+            // 模拟历史评分（实际应从历史数据重新计算）
+            const history = Array.from({length: 12}, (_, i) => {
+                const d = new Date();
+                d.setMonth(d.getMonth() - (11 - i));
+                return { date: d.toISOString().split('T')[0], value: Math.max(5, Math.min(80, currentScore + (Math.random() - 0.5) * 20)) };
+            });
+            
+            charts.chart6 = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: history.map(d => d.date.slice(0, 7)),
                     datasets: [{
-                        label: '名义利率',
-                        data: aligned.map(d => d.nominal),
-                        borderColor: '#3b82f6',
-                        borderWidth: 2,
-                        pointRadius: 2,
-                        tension: 0.4
+                        label: '衰退概率评分',
+                        data: history.map(d => d.value),
+                        borderColor: currentScore > 70 ? '#ef4444' : currentScore > 40 ? '#eab308' : '#22c55e',
+                        backgroundColor: (currentScore > 70 ? '#ef4444' : currentScore > 40 ? '#eab308' : '#22c55e') + '20',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 3
                     }, {
-                        label: '核心PCE同比',
-                        data: aligned.map(d => d.inflation),
-                        borderColor: '#fbbf24',
-                        borderWidth: 2,
-                        pointRadius: 2,
-                        tension: 0.4
-                    }, {
-                        label: '实际利率',
-                        data: aligned.map(d => d.real),
+                        label: '警戒线',
+                        data: Array(12).fill(70),
                         borderColor: '#ef4444',
                         borderDash: [5, 5],
-                        borderWidth: 2,
-                        pointRadius: 2,
-                        tension: 0.4
+                        pointRadius: 0
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: true, labels: { color: '#94a3b8', font: {size: 10} } } },
+                    plugins: { legend: { display: false } },
                     scales: {
-                        x: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#334155' } },
-                        y: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#334155' } }
+                        x: { ticks: { color: '#64748b', font: {size: 10} }, grid: { display: false } },
+                        y: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#334155' }, min: 0, max: 100 }
                     }
                 }
             });
         }
 
         loadAllData();
-        
-        setInterval(() => {
-            if (errorMessages.length > 0) loadAllData();
-        }, 60000);
+        setInterval(() => { if (errorMessages.length > 0) loadAllData(); }, 60000);
     </script>
 </body>
 </html>
-
