@@ -1,0 +1,5 @@
+mkdir data
+touch data/.gitkeep
+git add data/
+git commit -m "Add data folder"
+git push
